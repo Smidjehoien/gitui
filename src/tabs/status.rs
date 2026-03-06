@@ -382,7 +382,7 @@ impl Status {
 
 	///
 	pub fn update(&mut self) -> Result<()> {
-		self.git_branch_name.lookup().map(Some).unwrap_or(None);
+		let _ = self.git_branch_name.lookup().ok();
 
 		if self.is_visible() {
 			let config =
@@ -613,7 +613,7 @@ impl Status {
 		let is_ahead = self
 			.git_branch_state
 			.as_ref()
-			.map_or(true, |state| state.ahead > 0);
+			.is_none_or(|state| state.ahead > 0);
 
 		is_ahead && self.remotes.has_remote_for_push
 	}

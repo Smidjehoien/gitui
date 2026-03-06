@@ -145,15 +145,64 @@ impl HookPaths {
 		I: IntoIterator<Item = S> + Copy,
 		S: AsRef<OsStr>,
 	{
+		self.run_hook_os_str_with_stdin(args, None)
+	}
+
+	/// this function calls hook scripts with stdin input based on conventions documented here
+	/// see <https://git-scm.com/docs/githooks>
+	pub fn run_hook_os_str_with_stdin<I, S>(
+		&self,
+		args: I,
+		stdin: Option<&[u8]>,
+	) -> Result<HookResult>
+	where
+		I: IntoIterator<Item = S> + Copy,
+		S: AsRef<OsStr>,
+	{
 		let hook = self.hook.clone();
-		log::trace!("run hook '{:?}' in '{:?}'", hook, self.pwd);
+		log::trace!(
+			"run hook '{}' in '{}'",
+			hook.display(),
+			self.pwd.display()
+		);
 
 		let run_command = |command: &mut Command| {
-			command
+			let mut child = command
 				.args(args)
 				.current_dir(&self.pwd)
 				.with_no_window()
-				.output()
+				.stdin(if stdin.is_some() {
+					std::process::Stdio::piped()
+				} else {
+					std::process::Stdio::null()
+				})
+				.stdout(std::process::Stdio::piped())
+				.stderr(std::process::Stdio::piped())
+				.spawn()?;
+
+			if let (Some(mut stdin_handle), Some(input)) =
+				(child.stdin.take(), stdin)
+			{
+				use std::io::{ErrorKind, Write};
+
+				// Write stdin to hook process
+				// Ignore broken pipe - hook may exit early without reading all input
+				let _ =
+					stdin_handle.write_all(input).inspect_err(|e| {
+						match e.kind() {
+							ErrorKind::BrokenPipe => {
+								log::debug!(
+									"Hook closed stdin early"
+								);
+							}
+							_ => log::warn!(
+								"Failed to write stdin to hook: {e}"
+							),
+						}
+					});
+			}
+
+			child.wait_with_output()
 		};
 
 		let output = if cfg!(windows) {
@@ -206,21 +255,21 @@ impl HookPaths {
 			}
 		}?;
 
-		if output.status.success() {
-			Ok(HookResult::Ok { hook })
-		} else {
-			let stderr =
-				String::from_utf8_lossy(&output.stderr).to_string();
-			let stdout =
-				String::from_utf8_lossy(&output.stdout).to_string();
+		let stderr =
+			String::from_utf8_lossy(&output.stderr).to_string();
+		let stdout =
+			String::from_utf8_lossy(&output.stdout).to_string();
 
-			Ok(HookResult::RunNotSuccessful {
-				code: output.status.code(),
-				stdout,
-				stderr,
-				hook,
-			})
-		}
+		// Get exit code, or fail if process was killed by signal
+		let code =
+			output.status.code().ok_or(HooksError::NoExitCode)?;
+
+		Ok(HookResult::Run(crate::HookRunResponse {
+			hook,
+			stdout,
+			stderr,
+			code,
+		}))
 	}
 }
 
@@ -250,7 +299,7 @@ fn is_executable(path: &Path) -> bool {
 	let metadata = match path.metadata() {
 		Ok(metadata) => metadata,
 		Err(e) => {
-			log::error!("metadata error: {}", e);
+			log::error!("metadata error: {e}");
 			return false;
 		}
 	};

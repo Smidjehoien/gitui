@@ -3,7 +3,10 @@ use std::fmt::Display;
 use super::RepoPath;
 use crate::{
 	error::Result,
-	sync::{commit_details::get_author_of_commit, repository::repo},
+	sync::{
+		commit_details::get_author_of_commit,
+		repository::{gix_repo, repo},
+	},
 };
 use git2::{Commit, Error, Oid};
 use scopetime::scope_time;
@@ -93,6 +96,15 @@ impl From<gix::ObjectId> for CommitId {
 	}
 }
 
+impl From<gix::Commit<'_>> for CommitId {
+	fn from(commit: gix::Commit<'_>) -> Self {
+		#[allow(clippy::expect_used)]
+		let oid = Oid::from_bytes(commit.id().as_bytes()).expect("`Oid::from_bytes(commit.id().as_bytes())` is expected to never fail");
+
+		Self::new(oid)
+	}
+}
+
 impl From<CommitId> for gix::ObjectId {
 	fn from(id: CommitId) -> Self {
 		Self::from_bytes_or_panic(id.0.as_bytes())
@@ -157,9 +169,7 @@ pub fn get_commit_info(
 ) -> Result<CommitInfo> {
 	scope_time!("get_commit_info");
 
-	let repo: gix::Repository =
-				gix::ThreadSafeRepository::discover_with_environment_overrides(repo_path.gitpath())
-						.map(Into::into)?;
+	let repo: gix::Repository = gix_repo(repo_path)?;
 	let mailmap = repo.open_mailmap();
 
 	let commit = repo.find_commit(*commit_id)?;
@@ -167,7 +177,7 @@ pub fn get_commit_info(
 
 	let message = gix_get_message(&commit_ref, None);
 
-	let author = commit_ref.author();
+	let author = commit_ref.author()?;
 
 	let author = mailmap.try_resolve(author).map_or_else(
 		|| author.name.into(),
@@ -177,7 +187,7 @@ pub fn get_commit_info(
 	Ok(CommitInfo {
 		message,
 		author: author.to_string(),
-		time: commit_ref.time().seconds,
+		time: commit_ref.time()?.seconds,
 		id: commit.id().detach().into(),
 	})
 }

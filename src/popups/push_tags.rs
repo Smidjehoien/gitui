@@ -16,8 +16,8 @@ use asyncgit::{
 			extract_username_password, need_username_password,
 			BasicAuthCredential,
 		},
-		get_default_remote, AsyncProgress, PushTagsProgress,
-		RepoPathRef,
+		get_default_remote, hooks_pre_push, AsyncProgress,
+		HookResult, PushTagsProgress, RepoPathRef,
 	},
 	AsyncGitNotification, AsyncPushTags, PushTagsRequest,
 };
@@ -84,10 +84,28 @@ impl PushTagsPopup {
 		&mut self,
 		cred: Option<BasicAuthCredential>,
 	) -> Result<()> {
+		let remote = get_default_remote(&self.repo.borrow())?;
+
+		let repo = self.repo.borrow();
+		if let HookResult::NotOk(e) = hooks_pre_push(
+			&repo,
+			&remote,
+			&asyncgit::sync::PrePushTarget::Tags,
+			cred.clone(),
+		)? {
+			log::error!("pre-push hook failed: {e}");
+			self.queue.push(InternalEvent::ShowErrorMsg(format!(
+				"pre-push hook failed:\n{e}"
+			)));
+			self.pending = false;
+			self.visible = false;
+			return Ok(());
+		}
+
 		self.pending = true;
 		self.progress = None;
 		self.git_push.request(PushTagsRequest {
-			remote: get_default_remote(&self.repo.borrow())?,
+			remote,
 			basic_credential: cred,
 		})?;
 		Ok(())
@@ -131,8 +149,8 @@ impl PushTagsPopup {
 	pub fn get_progress(
 		progress: Option<&PushTagsProgress>,
 	) -> (String, u8) {
-		progress.as_ref().map_or(
-			(strings::PUSH_POPUP_PROGRESS_NONE.into(), 0),
+		progress.as_ref().map_or_else(
+			|| (strings::PUSH_POPUP_PROGRESS_NONE.into(), 0),
 			|progress| {
 				(
 					Self::progress_state_name(progress),
